@@ -3,6 +3,8 @@ Decode raw AX.25 frames from stdin to human-readable form on stdout.
 
 Does not handle removing KISS framing.
 
+Author: Paula G8PZT
+
 ## Building
 
 ```
