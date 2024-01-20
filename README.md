@@ -1,5 +1,7 @@
 # ax2txt
-Decode ax25 frames from stdin to stdout
+Decode raw AX.25 frames from stdin to human-readable form on stdout.
+
+Does not handle removing KISS framing.
 
 ## Building
 
