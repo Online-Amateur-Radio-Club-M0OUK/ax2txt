@@ -2,14 +2,17 @@
  * Program:	AX2TXT
  * Purpose:	Decode ax25 frames from stdin to stdout.
  * Created: Sat 20th Jan 2024, by Paula G8PZT
- * Notes:	Very quick and dirty, could be improved!
- * Version:	1.1, 20/1/2024
+ * Notes:	- Very quick and dirty, could be improved!
+ * 			- Created with tab indenting, Tabsize=3.
+ * Version:	1.2, 21/1/2024
  * Modified:
  * 20/1/24	1.1	Corrected AckRqst / AckRply display.
+ * 21/1/24	1.2	Added NetRom L3/4 and Nodes bcast decoding
  *
  */
 
 #include <stdio.h>
+#include <ctype.h>
 
 
 typedef	unsigned char byte;
@@ -69,6 +72,24 @@ typedef	int	bool;
 #define	SEG_FIRST	0x80	/* Denotes first segment */
 #define	SEG_LEFT		0x7f	/* Mask for # remaining segs */
 
+/* L4 opcodes - in lower nybble of opcode byte */
+#define	L4_OP_PID	0x00
+#define	L4_OP_CREQ	0x01
+#define	L4_OP_CACK	0x02
+#define	L4_OP_DREQ	0x03
+#define	L4_OP_DACK	0x04
+#define	L4_OP_INFO	0x05
+#define	L4_OP_IACK	0x06
+#define	L4_OP_RSET	0x07	// Link reset (G8PZT)
+#define	L4_OP_CRQX	0x08	// Extended CREQ (G8PZT)
+#define	L4_OP_MASK	0x0f
+
+/* L4 Flags - in upper nybble of opcode byte */
+#define	L4_FLG_CHOKE	0x80
+#define	L4_FLG_NAK	0x40
+#define	L4_FLG_MORE	0x20
+#define	L4_FLG_MASK	0xF0
+
 /*******************************************************************/
 /* Purpose:		Decode and display an AX25 callsign.
  * Called by:	main() and decodeDigipeaters().
@@ -122,9 +143,15 @@ static int decodeDigipeaters (byte *bp, int len)
 	return (len);
 	}
 
+// Trivial: used in displayText() and decodeL4
+static void putHex (int value)
+	{
+	printf ("{0x%02x}", value);
+	}
+
 /*******************************************************************/
-/* Purpose:		Display the text portion of a NO-L3 AX25 frame.
- * Called by:	main() only.
+/* Purpose:		Display the text payload of AX25 L2 or L4 frame.
+ * Called by:	main() and decodeNetromLayer4().
  * Arguments:	Pointer to the start of text (not null terminated!),
  * 				length of text.
  * Actions:		Displays text, substituting packet EOL with Linux EOL,
@@ -148,13 +175,265 @@ static void displayText (byte *bp, int len)
 		else
 			{
 			if (ch >= 32 && ch <= 127) putchar (ch);
-			else printf ("{0x%02x}", ch);
+			else putHex (ch);
 			}
 		}
 
 	putchar ('\n');
 	}
 
+/*******************************************************************/
+/* Purpose:		Get a Netrom "alias" into a string.
+ * Called by:	decodeNodesBroadcast()
+ * Arguments:	Pointer to the start of alias (not null terminated!),
+ * 				Pointer to a string to write the result to.
+ * Assumes:		There are at least 6 bytes in the source buffer, and
+ * 				at least 7 in the output string.
+ * Actions:		Copies at most 6 characters from source buffer bp to
+ * 				destination string "alias", stopping at the first
+ * 				whitespace. The output string is null terminated.
+ * Affects:		Supplied string only.
+ * Returns:		Pointer to the string containing the alias
+ * Created:		Sat 20th Jan 2024
+ * Modified:	x
+ * Notes:		*/
+/*******************************************************************/
+
+char *getAlias (byte *bp, char *alias)
+	{
+	int			i;
+	byte		ch;
+
+  for (i = 0; i < 6; i++)
+     {
+     if (isspace (ch = *bp++)) break;
+     alias [i] = ch;
+     }
+
+  alias [i] = 0;
+
+  return (alias);
+  }
+
+/*******************************************************************/
+/* Purpose:		Decode and display Netrom Layer 4.
+ * Called by:	decodeNetrom() only.
+ * Arguments:	Pointer to the start of L4 header,
+ * 				length of header+payload.
+ * Affects:		stdout only.
+ * Created:		Sun 21st Jan 2024 v1.2
+ * Modified:	x
+ * Notes:		*/
+/*******************************************************************/
+
+static void decodeNetromLayer4 (byte *bp, int len)
+	{
+	int		l4opcode, l4flags, minhdr;
+	char		*winstr = " w=%d\n         ";	// indent 9 spaces
+
+	if (len < 5)
+		{
+		printf("  (Bad L4 header)\n");
+		return;
+		}
+
+	l4opcode = bp [4] & L4_OP_MASK;
+	l4flags = bp [4] & L4_FLG_MASK;
+
+	switch (l4opcode)
+		{
+		case L4_OP_PID:
+			// Protocol extension - beyond the scope of this applet?
+			printf (" pf=%02x prot=%02x\n", bp[0], bp[1]);
+			return;
+
+		case L4_OP_CREQ:
+		case L4_OP_CRQX:
+			minhdr = 20;
+			break;
+
+		case L4_OP_CACK:
+			minhdr = 6;
+			break;
+
+		default:
+			minhdr = 5;
+			break;
+		}
+
+	if (len < minhdr )
+		{
+		printf("  (Bad L4 header)\n");
+		return;
+		}
+
+	printf (" cct=%02X%02X", bp[0], bp[1]);
+
+	switch (l4opcode)
+		{
+		case L4_OP_CREQ:
+			if (len < 20)
+				{
+				}
+			printf (" <CONN REQ>");
+			printf (winstr, bp [5]);	// proposed window
+			decodeCallsign (bp+6);		// Source call
+			printf (" at ");
+			decodeCallsign (bp+13);		// Source node
+
+			// BPQ extensions - up to 4 bytes, first 2 are L4T1
+			if (len > 21) printf (" t/o=%d ", bp[20] + (256*bp [21]));
+			if (len > 22) putchar (bp [22]);	// 'Z' = BPQ "spy" flag
+			if (len > 23)
+				{
+				putchar (' ');
+				putHex (bp [23]);
+				}
+			break;
+
+		case L4_OP_CACK:
+			printf (" <CONN ");
+			if (l4flags & L4_FLG_CHOKE) printf ("NAK> ");
+			else
+				{
+				printf ("ACK> w=%d my cct=%02X%02X ",
+					bp [5], bp [2], bp [3]);
+				}
+			break;
+
+		case L4_OP_DREQ:
+			printf (" <DISC REQ> ");
+			break;
+
+		case L4_OP_DACK:
+			printf (" <DISC ACK> ");
+			break;
+
+		case L4_OP_INFO:
+			printf (" <INFO S%d R%d> ", bp [2], bp [3]);
+			break;
+
+		case L4_OP_IACK:
+			printf (" <INFO ACK R%d> ", bp [3]);
+			break;
+
+		case L4_OP_RSET:
+			printf (" <RSET> my_cct=%02X%02X", bp [2], bp [3]);
+			break;
+
+		case L4_OP_CRQX:
+			printf (" <CONN REQX> svc=%d", bp[2]+(256*bp[3]));
+			printf (winstr, bp [5]);	// proposed window
+			decodeCallsign (bp+6);		// Source call
+			printf (" at ");
+			decodeCallsign (bp+13);		// Source node
+			if (len > 20) printf ("flg=%u", bp[20]);	// flags
+			break;
+		}	/* end of switch */
+
+	if ((l4flags & L4_FLG_CHOKE) && l4opcode != L4_OP_CACK)
+		printf ("<CHOKE>");
+
+	if (l4flags & L4_FLG_NAK) printf ("<NAK>");
+	if (l4flags & L4_FLG_MORE) printf ("<MORE>");
+
+	putchar ('\n');
+
+	if (l4opcode != L4_OP_INFO) return;
+
+	printf ("  DATA: ");
+
+	displayText (bp+5, len-5);
+
+	putchar ('\n');
+	}
+
+/*******************************************************************/
+/* Purpose:		Decode and display Netrom Nodes broadcast.
+ * Called by:	decodeNetrom() only.
+ * Arguments:	Pointer to the start of broadcast data,
+ * 				length of data.
+ * Affects:		stdout only.
+ * Created:		Sat 20th Jan 2024
+ * Modified:	x
+ * Notes:		*/
+/*******************************************************************/
+
+static void decodeNodesBroadcast (byte *bp, int len)
+	{
+	char tmp [30];
+
+	printf("NODES broadcast from %s len = %d\n",
+		getAlias (bp, tmp), len);
+
+	bp += 6;
+	len -= 6;
+
+	while (len >= 21)
+		{
+		printf ("  ");
+		decodeCallsign (bp);	// Nodecall
+		printf (":%s via ", getAlias (bp+7, tmp));
+		decodeCallsign (bp+13);	// via node
+		printf (" qlty=%d\n", bp[20]);
+		bp += 21;
+		len -= 21;
+		}
+  }
+
+/*******************************************************************/
+/* Purpose:		Decode and display Netrom Layer 3.
+ * Called by:	main() only, for PID==0xcf.
+ * Arguments:	Pointer to the start of L3 header,
+ * 				length of header+payload.
+ * Actions:		Decodes L3, then L4 and any L4 text payload
+ * Affects:		stdout only.
+ * Created:		Sat 20th Jan 2024
+ * Modified:	x
+ * Notes:		*/
+/*******************************************************************/
+
+static void decodeNetrom (byte *bp, int len, bool bcast)
+	{
+	if (*bp == 0xff)  // Nodes b/cast or INP3 routing info frame
+		{
+		if (bcast) decodeNodesBroadcast (bp+1, len-1);
+		///else trace inp3 rif - to be done - if you want?
+		return;
+		}
+
+	if (*bp == 0xFE)	// Poll for nodes broadcast
+		{
+		printf ("  Routing poll");
+		if (len > 1)
+			{
+			char	alias [10];
+
+			// Display the sender's s alias
+			printf (" from %s\n", getAlias (bp+1, alias));
+			}
+		else printf (" (bad)\n");
+
+		return;
+		}
+
+	if (len < 15)
+		{
+		printf ("(L3 header too short)\n");
+		return;
+		}
+
+	printf ("NTRM: ");				// Indent the display
+	decodeCallsign (bp);				// L3 source callsogn
+	printf (" to ");
+	decodeCallsign (bp+7);			// L3 dest callsign
+	printf (" ttl=%d", bp[14]);	// L3 TTL
+
+	bp += 15;
+	len -= 15;
+
+	decodeNetromLayer4 (bp, len);
+	}
 
 /*******************************************************************/
 /* Purpose:		Main function
@@ -202,7 +481,7 @@ int main (int argc, char *argv[])
 	 * */
 	if (len > 1 && (bp [1] == 0))
 		{
-		printf ("AckRqst [%d] ", bp [0]);
+		printf ("AckRqst: [%d] ", bp [0]);
 		bp += 2;
 		len -= 2;
 		}
@@ -369,7 +648,7 @@ int main (int argc, char *argv[])
 
 		case PID_NETROM:
 			printf (" NET/ROM\n  ");
-			///decodeNetrom (bp, len, (frametype == UI);
+			decodeNetrom (bp, len, (frametype == UI));
 			return (0);
 
 		case PID_IP:
