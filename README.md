@@ -11,8 +11,7 @@ Author: Paula G8PZT
 apt install git build-essential
 git clone https://github.com/Online-Amateur-Radio-Club-M0OUK/ax2txt.git
 cd ax2txt
-gcc
-mv a.out ax2txt
+gcc ax2txt.c -o ax2txt
 ```
 
 ## Usage
