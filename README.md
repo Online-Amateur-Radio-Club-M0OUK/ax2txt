@@ -14,6 +14,14 @@ cd ax2txt
 gcc ax2txt.c -o ax2txt
 ```
 
+## Updating
+
+```
+cd ax2txt
+git pull
+gcc ax2txt.c -o ax2txt
+```
+
 ## Usage
 
 ```
